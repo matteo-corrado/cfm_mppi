@@ -6,7 +6,7 @@ NAME = "cfm_mppi"
 DESCRIPTION = "Unified Generation-Refinement Planning: Bridging Guided Flow Matching and Sampling-Based MPC for Social Navigation"
 EMAIL = "mizuta@uw.edu"
 AUTHOR = "Kazuki Mizuta"
-REQUIRES_PYTHON = ">=3.11.0"
+REQUIRES_PYTHON = ">=3.10.0"
 
 readme_path = os.path.join(os.path.dirname(os.path.realpath(__file__)), "README.md")
 
