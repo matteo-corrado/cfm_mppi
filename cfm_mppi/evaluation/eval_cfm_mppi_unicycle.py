@@ -9,7 +9,8 @@ import time
 
 from cfm_mppi.mppi.flowmppi import FlowMPPI
 from cfm_mppi.mppi.utils import stage_cost, terminal_cost, unicycle_dynamics
-from cfm_mppi.utils import AgentHistory, evaluate, HumanAgent
+from cfm_mppi.utils import AgentHistory, evaluate
+# HumanAgent imported lazily inside the SFM branch — keeps JAX-CUDA off the GPU on UCY/SDD runs.
 from cfm_mppi.evaluation.eval_utils import synthesize_control, CFMConfig
 import sys
 
@@ -74,7 +75,12 @@ all_distances = []
 state_trajectories = torch.zeros([batch_ego.shape[0], 3, horizon+1], dtype=torch.float32)
 control_trajectories = torch.zeros([batch_ego.shape[0], 2, horizon], dtype=torch.float32)
 
+eval_run_start = time.time()
+print(f"[trace] eval start: dataset={dataset}, n_scenarios={batch_ego.shape[0]}, n_sample={n_sample}, horizon={horizon}", flush=True)
+
 for idx in range(batch_ego.shape[0]):
+    scenario_start = time.time()
+    print(f"[trace] scenario {idx}/{batch_ego.shape[0]} begin (elapsed={scenario_start-eval_run_start:.1f}s)", flush=True)
     if dataset == 'ucy' or dataset == 'sdd':
         state_obs = batch_obs[idx]
         nan_mask = torch.isnan(state_obs).any(dim=(0,2,3))
@@ -85,6 +91,7 @@ for idx in range(batch_ego.shape[0]):
         start = torch.zeros(1,2).to(device)
         goal = batch_ego[idx,:2,-1].to(device)
     elif dataset == 'sfm':
+        from cfm_mppi.utils import HumanAgent
         start = torch.zeros(1,2).to(device)
         goal = torch.tensor(
             [[6.0, 6.0]], dtype=torch.float32, device=device  # Example goal position
@@ -137,6 +144,8 @@ for idx in range(batch_ego.shape[0]):
     total_time = 0
     noise = None
     for t in range(horizon):
+        if t % 10 == 0:
+            print(f"[trace]   scenario {idx} t={t}/{horizon} (scenario_elapsed={time.time()-scenario_start:.1f}s)", flush=True)
         if dataset == 'sfm':
             if t!=0:
                 for i in range(n_hum):
@@ -212,7 +221,8 @@ for idx in range(batch_ego.shape[0]):
     state_trajectories[idx] = state_hist
     control_trajectories[idx] = control_hist
 
-    print(idx, flush=True)
+    scenario_wall = time.time() - scenario_start
+    print(f"[trace] scenario {idx} done in {scenario_wall:.2f}s (mean_step={average_time*1000:.1f}ms, collision={int(collision.item()) if hasattr(collision,'item') else int(collision)}, dist={distance.item() if hasattr(distance,'item') else distance:.3f})", flush=True)
 
 
 all_average_times = torch.tensor(all_average_times)
