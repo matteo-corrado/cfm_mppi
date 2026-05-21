@@ -72,13 +72,17 @@ class FlowMPPI(nn.Module):
 
         # noise distribution
         zero_mean = torch.zeros(dim_control, device=self._device, dtype=self._dtype)
-        initial_covariance = torch.diag(sigmas**2).to(self._device, self._dtype)
-        self._inv_covariance = torch.inverse(initial_covariance).to(
-            self._device, self._dtype
-        )
-
+        # Jetson CUDA 12.6 workaround: libtorch_cuda_linalg.so is missing
+        # cusolverDnXsyevBatched_bufferSize, so any torch.linalg call on GPU
+        # (torch.inverse, cholesky, cholesky_ex) aborts with dlopen error.
+        # Fix: compute inverse on CPU then move; pass scale_tril (=diag(sigmas))
+        # instead of covariance_matrix so MultivariateNormal skips its internal
+        # torch.linalg.cholesky call entirely.
+        _sigmas_cpu = sigmas.cpu().to(torch.float32)
+        self._inv_covariance = torch.diag(1.0 / (_sigmas_cpu ** 2)).to(self._device, self._dtype)
+        _scale_tril = torch.diag(_sigmas_cpu).to(self._device, self._dtype)
         self._noise_distribution = MultivariateNormal(
-            loc=zero_mean, covariance_matrix=initial_covariance
+            loc=zero_mean, scale_tril=_scale_tril, validate_args=False
         )
 
         # dynamics type

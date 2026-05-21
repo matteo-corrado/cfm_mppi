@@ -3,6 +3,7 @@ dataset/
 wandb/
 videos/
 images/
+results/
 *.pt
 *.pkl
 *.mp4
