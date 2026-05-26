@@ -137,3 +137,28 @@ def test_write_hyperparams_and_env(tmp_path):
     assert "cpu_live_mhz_first4" in env
     assert "start_iso" in env
     assert "end_iso" in env
+
+
+def test_start_section_before_begin_scenario_raises():
+    rec = InstrumentationRecorder(n_scenarios=2, horizon=3, use_cuda=False)
+    rec.begin_step(0)  # without begin_scenario
+    with pytest.raises(RuntimeError, match="begin_scenario"):
+        rec.start_section("sfm")
+
+
+def test_end_scenario_without_begin_raises():
+    rec = InstrumentationRecorder(n_scenarios=2, horizon=3, use_cuda=False)
+    with pytest.raises(RuntimeError, match="begin_scenario"):
+        rec.end_scenario(
+            0,
+            scenario_metrics={"coll": 0, "dist": 0.0, "mean_step_ms": 0.0, "n_obs": 0},
+        )
+
+
+def test_iso_timestamps_include_utc_offset():
+    import re
+
+    rec = InstrumentationRecorder(n_scenarios=1, horizon=1, use_cuda=False)
+    assert re.search(r"\+00:00$|Z$", rec._start_iso), (
+        f"start_iso must be UTC-anchored; got {rec._start_iso!r}"
+    )

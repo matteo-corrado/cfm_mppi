@@ -7,6 +7,7 @@ torch.cuda.Event (async, no sync inside the t-loop).
 
 from __future__ import annotations
 
+import datetime
 import os
 import subprocess
 import time
@@ -37,7 +38,7 @@ class InstrumentationRecorder:
         self._obs_state_trajs: list[object] = []
         self._obs_control_trajs: list[object] = []
         self._goals: list[object] = []
-        self._start_iso = time.strftime("%Y-%m-%dT%H:%M:%S%z")
+        self._start_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
 
     def begin_scenario(self, idx: int) -> None:
         self._current_idx = idx
@@ -49,6 +50,11 @@ class InstrumentationRecorder:
     def start_section(self, name: str) -> None:
         if name not in self.SECTION_NAMES:
             raise ValueError(f"unknown section: {name}")
+        if self._current_idx < 0:
+            raise RuntimeError(
+                f"start_section({name}) called before begin_scenario; "
+                f"_current_idx={self._current_idx}"
+            )
         key = (name, self._current_idx, self._current_t)
         if name == "sfm" or not self.use_cuda:
             self._cpu_starts[key] = time.perf_counter()
@@ -64,6 +70,8 @@ class InstrumentationRecorder:
     def end_section(self, name: str) -> None:
         if name not in self.SECTION_NAMES:
             raise ValueError(f"unknown section: {name}")
+        if self._current_idx < 0:
+            raise RuntimeError(f"end_section({name}) called before begin_scenario")
         key = (name, self._current_idx, self._current_t)
         if name == "sfm" or not self.use_cuda:
             start = self._cpu_starts.pop(key, None)
@@ -90,6 +98,10 @@ class InstrumentationRecorder:
             raise RuntimeError(f"end_section({name}) without matching start_section")
 
     def end_scenario(self, idx: int, scenario_metrics: dict) -> None:
+        if self._scenario_start is None:
+            raise RuntimeError(
+                f"end_scenario({idx}) called without preceding begin_scenario"
+            )
         if self.use_cuda and any(e[1] == idx for e in self._pending_cuda):
             import torch
 
@@ -98,7 +110,7 @@ class InstrumentationRecorder:
             if sc_idx == idx and end_ev is not None:
                 self.section_times_ms[n][sc_idx, t] = start_ev.elapsed_time(end_ev)
         self._pending_cuda = [e for e in self._pending_cuda if e[1] != idx]
-        wall_s = time.perf_counter() - (self._scenario_start or time.perf_counter())
+        wall_s = time.perf_counter() - self._scenario_start
         row = {"idx": idx, "scenario_wall_s": wall_s, **scenario_metrics}
         self.per_scenario_rows.append(row)
 
@@ -252,5 +264,5 @@ def _capture_env(requested_precision: str, start_iso: str) -> dict:
         "slurm_job_id": os.environ.get("SLURM_JOB_ID", "N/A"),
         "slurm_array_task_id": os.environ.get("SLURM_ARRAY_TASK_ID", "N/A"),
         "start_iso": start_iso,
-        "end_iso": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        "end_iso": datetime.datetime.now(datetime.timezone.utc).isoformat(),
     }
