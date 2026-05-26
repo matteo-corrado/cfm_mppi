@@ -105,3 +105,45 @@ class InstrumentationRecorder:
         self._obs_state_trajs.append(pos_obs.detach().cpu().clone())
         self._obs_control_trajs.append(vel_obs.detach().cpu().clone())
         self._goals.append(goal.detach().cpu().clone())
+
+    def dump_cell(self, out_dir) -> None:
+        import json
+        from pathlib import Path
+
+        import torch
+
+        out_dir = Path(out_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        dump = out_dir / "dump"
+        dump.mkdir(exist_ok=True)
+
+        # State + control + goal are uniform-shape per scenario — stackable.
+        if self._state_trajs:
+            torch.save(torch.stack(self._state_trajs), dump / "state_traj.pt")
+            torch.save(torch.stack(self._control_trajs), dump / "control_traj.pt")
+            torch.save(torch.stack(self._goals), dump / "goal.pt")
+        # Obs may have ragged n_obs across scenarios — save as list.
+        torch.save(self._obs_state_trajs, dump / "obs_state_traj.pt")
+        torch.save(self._obs_control_trajs, dump / "obs_control_traj.pt")
+
+        np.savez(
+            out_dir / "section_times.npz",
+            cfm_ms=self.section_times_ms["cfm"],
+            mppi_ms=self.section_times_ms["mppi"],
+            sfm_ms=self.section_times_ms["sfm"],
+        )
+        with open(out_dir / "per_scenario.jsonl", "w") as f:
+            for row in self.per_scenario_rows:
+                f.write(json.dumps(row, default=_jsonable) + "\n")
+
+
+def _jsonable(o):
+    import torch
+
+    if isinstance(o, torch.Tensor):
+        return o.tolist()
+    if isinstance(o, np.ndarray):
+        return o.tolist()
+    if isinstance(o, (np.floating, np.integer)):
+        return o.item()
+    return str(o)

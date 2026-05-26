@@ -69,3 +69,46 @@ def test_capture_appends_per_scenario_buffers():
     assert len(rec._state_trajs) == 2
     assert rec._state_trajs[1][0, 0].item() == 1.0
     assert rec._goals[0].tolist() == [1.0, 2.0]
+
+
+def test_dump_cell_writes_all_artifacts(tmp_path):
+    import json
+
+    rec = InstrumentationRecorder(n_scenarios=2, horizon=3, use_cuda=False)
+    rec.begin_scenario(0)
+    rec.begin_step(0)
+    rec.start_section("sfm")
+    rec.end_section("sfm")
+    state_hist = torch.zeros(3, 4)
+    control_hist = torch.zeros(2, 3)
+    pos_obs = torch.zeros(5, 2, 3)
+    vel_obs = torch.zeros(5, 2, 3)
+    goal = torch.tensor([0.0, 0.0])
+    rec.capture(state_hist, control_hist, pos_obs, vel_obs, goal)
+    rec.end_scenario(
+        0, scenario_metrics={"coll": 0, "dist": 1.0, "mean_step_ms": 5.0, "n_obs": 5}
+    )
+
+    rec.dump_cell(tmp_path)
+
+    assert (tmp_path / "dump" / "state_traj.pt").exists()
+    assert (tmp_path / "dump" / "control_traj.pt").exists()
+    assert (tmp_path / "dump" / "obs_state_traj.pt").exists()
+    assert (tmp_path / "dump" / "obs_control_traj.pt").exists()
+    assert (tmp_path / "dump" / "goal.pt").exists()
+    assert (tmp_path / "section_times.npz").exists()
+    assert (tmp_path / "per_scenario.jsonl").exists()
+
+    rows = [
+        json.loads(line)
+        for line in (tmp_path / "per_scenario.jsonl").read_text().splitlines()
+    ]
+    assert len(rows) == 1
+    assert rows[0]["idx"] == 0
+    assert rows[0]["coll"] == 0
+    assert rows[0]["mean_step_ms"] == 5.0
+    assert "scenario_wall_s" in rows[0]
+
+    npz = np.load(tmp_path / "section_times.npz")
+    assert set(npz.keys()) == {"cfm_ms", "mppi_ms", "sfm_ms"}
+    assert npz["sfm_ms"].shape == (2, 3)
