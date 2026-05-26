@@ -2,6 +2,7 @@
 import time
 
 import numpy as np
+import pytest
 
 from cfm_mppi.instrumentation import InstrumentationRecorder
 
@@ -30,3 +31,26 @@ def test_cpu_section_records_elapsed_ms():
     # other cells untouched
     assert np.isnan(rec.section_times_ms["sfm"][0, 0])
     assert np.isnan(rec.section_times_ms["sfm"][1, 1])
+
+
+@pytest.mark.skipif(
+    not __import__("torch").cuda.is_available(),
+    reason="CUDA not available",
+)
+def test_cuda_section_records_elapsed_ms():
+    import torch
+
+    rec = InstrumentationRecorder(n_scenarios=1, horizon=2, use_cuda=True)
+    rec.begin_scenario(0)
+    rec.begin_step(0)
+    rec.start_section("cfm")
+    # synthetic GPU work
+    x = torch.randn(2048, 2048, device="cuda")
+    for _ in range(20):
+        x = x @ x
+    rec.end_section("cfm")
+    rec.end_scenario(
+        0, scenario_metrics={"coll": 0, "dist": 0.0, "mean_step_ms": 0.0, "n_obs": 0}
+    )
+    val = rec.section_times_ms["cfm"][0, 0]
+    assert val > 0.0 and not np.isnan(val), f"cfm timing should be populated, got {val}"
