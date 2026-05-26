@@ -7,6 +7,8 @@ torch.cuda.Event (async, no sync inside the t-loop).
 
 from __future__ import annotations
 
+import os
+import subprocess
 import time
 from typing import Optional
 
@@ -35,6 +37,7 @@ class InstrumentationRecorder:
         self._obs_state_trajs: list[object] = []
         self._obs_control_trajs: list[object] = []
         self._goals: list[object] = []
+        self._start_iso = time.strftime("%Y-%m-%dT%H:%M:%S%z")
 
     def begin_scenario(self, idx: int) -> None:
         self._current_idx = idx
@@ -136,6 +139,25 @@ class InstrumentationRecorder:
             for row in self.per_scenario_rows:
                 f.write(json.dumps(row, default=_jsonable) + "\n")
 
+    def write_hyperparams(self, out_dir, hparams: dict) -> None:
+        import json
+        from pathlib import Path
+
+        out_dir = Path(out_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        with open(out_dir / "hyperparams.json", "w") as f:
+            json.dump(hparams, f, indent=2, default=_jsonable)
+
+    def write_env(self, out_dir, requested_precision: str) -> None:
+        import json
+        from pathlib import Path
+
+        out_dir = Path(out_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        env = _capture_env(requested_precision, self._start_iso)
+        with open(out_dir / "env.json", "w") as f:
+            json.dump(env, f, indent=2, default=_jsonable)
+
 
 def _jsonable(o):
     import torch
@@ -147,3 +169,88 @@ def _jsonable(o):
     if isinstance(o, (np.floating, np.integer)):
         return o.item()
     return str(o)
+
+
+def _read_file(path: str) -> str:
+    try:
+        with open(path) as fh:
+            return fh.read().strip()
+    except Exception:
+        return "N/A"
+
+
+def _run(cmd: list) -> str:
+    try:
+        return subprocess.check_output(
+            cmd, stderr=subprocess.DEVNULL, text=True, timeout=5
+        ).strip()
+    except Exception:
+        return "N/A"
+
+
+def _read_cpu_model() -> str:
+    try:
+        with open("/proc/cpuinfo") as fh:
+            for line in fh:
+                if line.startswith("model name"):
+                    return line.split(":", 1)[1].strip()
+    except Exception:
+        pass
+    return "N/A"
+
+
+def _read_live_mhz(n: int) -> list:
+    out = []
+    try:
+        with open("/proc/cpuinfo") as fh:
+            for line in fh:
+                if line.startswith("cpu MHz"):
+                    out.append(float(line.split(":", 1)[1].strip()))
+                    if len(out) >= n:
+                        break
+    except Exception:
+        pass
+    return out
+
+
+def _capture_env(requested_precision: str, start_iso: str) -> dict:
+    import torch as _t
+
+    try:
+        import jax
+
+        jax_version = jax.__version__
+        jax_devices = [str(d) for d in jax.devices()]
+    except Exception:
+        jax_version = "N/A"
+        jax_devices = []
+
+    return {
+        "torch_version": _t.__version__,
+        "jax_version": jax_version,
+        "cuda_version": _t.version.cuda or "N/A",
+        "cudnn_version": _t.backends.cudnn.version()
+        if _t.cuda.is_available()
+        else None,
+        "jax_devices": jax_devices,
+        "requested_precision": requested_precision,
+        "active_matmul_precision": _t.get_float32_matmul_precision(),
+        "allow_tf32_matmul": _t.backends.cuda.matmul.allow_tf32,
+        "allow_tf32_cudnn": _t.backends.cudnn.allow_tf32,
+        "git_rev": _run(["git", "rev-parse", "HEAD"]),
+        "hostname": _run(["hostname"]),
+        "cpu_model": _read_cpu_model(),
+        "cpu_governor": _read_file(
+            "/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor"
+        ),
+        "cpu_live_mhz_first4": _read_live_mhz(4),
+        "cpu_scaling_max_freq": _read_file(
+            "/sys/devices/system/cpu/cpu0/cpufreq/scaling_max_freq"
+        ),
+        "numa_topology_summary": _run(["numactl", "--hardware"]).split("\n")[:5],
+        "nvidia_smi_l": _run(["nvidia-smi", "-L"]),
+        "slurm_job_id": os.environ.get("SLURM_JOB_ID", "N/A"),
+        "slurm_array_task_id": os.environ.get("SLURM_ARRAY_TASK_ID", "N/A"),
+        "start_iso": start_iso,
+        "end_iso": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+    }

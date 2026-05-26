@@ -112,3 +112,28 @@ def test_dump_cell_writes_all_artifacts(tmp_path):
     npz = np.load(tmp_path / "section_times.npz")
     assert set(npz.keys()) == {"cfm_ms", "mppi_ms", "sfm_ms"}
     assert npz["sfm_ms"].shape == (2, 3)
+
+
+def test_write_hyperparams_and_env(tmp_path):
+    import json
+
+    rec = InstrumentationRecorder(n_scenarios=1, horizon=1, use_cuda=False)
+    rec.write_hyperparams(
+        tmp_path, {"SAFE_MARGIN": 0.5, "MPPI_LAMBDA": 0.1, "dataset": "ucy"}
+    )
+    rec.write_env(tmp_path, requested_precision="fp32")
+    hp = json.loads((tmp_path / "hyperparams.json").read_text())
+    assert hp["SAFE_MARGIN"] == 0.5
+    assert hp["dataset"] == "ucy"
+    env = json.loads((tmp_path / "env.json").read_text())
+    assert env["requested_precision"] == "fp32"
+    assert "torch_version" in env
+    assert "active_matmul_precision" in env
+    assert "allow_tf32_matmul" in env
+    assert "git_rev" in env
+    assert "hostname" in env
+    assert "cpu_model" in env
+    assert "cpu_governor" in env
+    assert "cpu_live_mhz_first4" in env
+    assert "start_iso" in env
+    assert "end_iso" in env
