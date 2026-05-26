@@ -13,7 +13,6 @@
 #SBATCH --account=free
 #SBATCH --mem=32G
 #SBATCH --cpus-per-task=4
-#SBATCH --cpu-bind=cores
 #SBATCH --hint=nomultithread
 #SBATCH --array=0-1
 #SBATCH --output=logs/%x-%A_%a.out
