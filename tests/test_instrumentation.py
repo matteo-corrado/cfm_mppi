@@ -3,6 +3,7 @@ import time
 
 import numpy as np
 import pytest
+import torch
 
 from cfm_mppi.instrumentation import InstrumentationRecorder
 
@@ -54,3 +55,17 @@ def test_cuda_section_records_elapsed_ms():
     )
     val = rec.section_times_ms["cfm"][0, 0]
     assert val > 0.0 and not np.isnan(val), f"cfm timing should be populated, got {val}"
+
+
+def test_capture_appends_per_scenario_buffers():
+    rec = InstrumentationRecorder(n_scenarios=2, horizon=3, use_cuda=False)
+    state_hist = torch.zeros(3, 4)
+    control_hist = torch.zeros(2, 3)
+    pos_obs = torch.zeros(5, 2, 3)
+    vel_obs = torch.zeros(5, 2, 3)
+    goal = torch.tensor([1.0, 2.0])
+    rec.capture(state_hist, control_hist, pos_obs, vel_obs, goal)
+    rec.capture(state_hist + 1, control_hist + 1, pos_obs + 1, vel_obs + 1, goal + 1)
+    assert len(rec._state_trajs) == 2
+    assert rec._state_trajs[1][0, 0].item() == 1.0
+    assert rec._goals[0].tolist() == [1.0, 2.0]

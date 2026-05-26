@@ -30,6 +30,11 @@ class InstrumentationRecorder:
         self._current_t: int = -1
         self._scenario_start: Optional[float] = None
         self.per_scenario_rows: list[dict] = []
+        self._state_trajs: list[object] = []
+        self._control_trajs: list[object] = []
+        self._obs_state_trajs: list[object] = []
+        self._obs_control_trajs: list[object] = []
+        self._goals: list[object] = []
 
     def begin_scenario(self, idx: int) -> None:
         self._current_idx = idx
@@ -93,3 +98,10 @@ class InstrumentationRecorder:
         wall_s = time.perf_counter() - (self._scenario_start or time.perf_counter())
         row = {"idx": idx, "scenario_wall_s": wall_s, **scenario_metrics}
         self.per_scenario_rows.append(row)
+
+    def capture(self, state_hist, control_hist, pos_obs, vel_obs, goal) -> None:
+        self._state_trajs.append(state_hist.detach().cpu().clone())
+        self._control_trajs.append(control_hist.detach().cpu().clone())
+        self._obs_state_trajs.append(pos_obs.detach().cpu().clone())
+        self._obs_control_trajs.append(vel_obs.detach().cpu().clone())
+        self._goals.append(goal.detach().cpu().clone())
