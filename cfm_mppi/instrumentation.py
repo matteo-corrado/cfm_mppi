@@ -151,6 +151,8 @@ class InstrumentationRecorder:
             for row in self.per_scenario_rows:
                 f.write(json.dumps(row, default=_jsonable) + "\n")
 
+        self.finalize_env_end_iso(out_dir)
+
     def write_hyperparams(self, out_dir, hparams: dict) -> None:
         import json
         from pathlib import Path
@@ -167,7 +169,27 @@ class InstrumentationRecorder:
         out_dir = Path(out_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
         env = _capture_env(requested_precision, self._start_iso)
+        # end_iso is updated to actual eval-end time by finalize_env_end_iso()
+        # called from dump_cell(); the placeholder value here is overwritten.
         with open(out_dir / "env.json", "w") as f:
+            json.dump(env, f, indent=2, default=_jsonable)
+
+    def finalize_env_end_iso(self, out_dir) -> None:
+        """Overwrite end_iso in env.json with the current UTC timestamp.
+
+        Called at cell-dump time so end_iso reflects actual eval end, not the
+        time write_env() ran at script init (T22 finding).
+        """
+        import json
+        from pathlib import Path
+
+        env_path = Path(out_dir) / "env.json"
+        if not env_path.exists():
+            return
+        with open(env_path) as f:
+            env = json.load(f)
+        env["end_iso"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        with open(env_path, "w") as f:
             json.dump(env, f, indent=2, default=_jsonable)
 
 
