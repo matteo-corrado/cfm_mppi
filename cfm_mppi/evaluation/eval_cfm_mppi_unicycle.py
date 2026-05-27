@@ -193,8 +193,8 @@ for idx in range(n_scenarios):
     for t in range(horizon):
         recorder.begin_step(t)
         if dataset == "sfm":
+            recorder.start_section("sfm")
             if t != 0:
-                recorder.start_section("sfm")
                 for i in range(n_hum):
                     others_states = torch.cat(
                         [
@@ -216,7 +216,7 @@ for idx in range(n_scenarios):
                     )
                     pos_obs[0, i, :, t] = torch.tensor(humans[i].state, device=device)
                     vel_obs[0, i, :, t] = torch.tensor(humans[i].control, device=device)
-                recorder.end_section("sfm")
+            recorder.end_section("sfm")
         time_start = time.time()
         pos_obs_1 = pos_obs[:, :, :, t]
         vel_obs_1 = vel_obs[:, :, :, t]
@@ -241,7 +241,6 @@ for idx in range(n_scenarios):
             device=device,
         )
 
-        recorder.start_section("cfm")
         controls_dyn, controls_sin = synthesize_control(
             model,
             flowmppi_solver,
@@ -254,9 +253,9 @@ for idx in range(n_scenarios):
             vel_obs_1,
             current_planning_horizon,
             histories=histories,
+            recorder=recorder,
             d=D,
         )
-        recorder.end_section("cfm")
 
         control_dyn = controls_dyn[:, :, 0]
 

@@ -242,7 +242,6 @@ for idx in range(n_scenarios):
             device=device,
         )
 
-        recorder.start_section("cfm")
         controls_dyn, controls_sin = synthesize_control(
             model,
             flowmppi_solver,
@@ -255,10 +254,10 @@ for idx in range(n_scenarios):
             vel_obs_1,
             current_planning_horizon,
             histories=histories,
+            recorder=recorder,
             d=D,
             k_p=DI_KP,
         )
-        recorder.end_section("cfm")
 
         control_dyn = controls_dyn[:, :, 0]
 
