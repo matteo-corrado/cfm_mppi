@@ -61,3 +61,26 @@ def single_proxemic_reward_fn(
     dist_world = torch.norm(delta_world, dim=-1)  # [H, n_peds]
     range_mask = torch.sigmoid(_SIGMOID_K * (max_range - dist_world))
     return -(cost * range_mask).sum()
+
+
+def single_legibility_reward_fn(
+    ego_controls: torch.Tensor,  # [ctrl_dim=2, horizon] — vendor contract
+    ped_states: torch.Tensor,  # [n_peds, 2] — unused, signature-matched for vmap
+    ped_velocities: torch.Tensor,  # [n_peds, 2] — unused
+    goal_dir: torch.Tensor,  # [2] vector toward goal in robot frame
+) -> torch.Tensor:
+    """Reward alignment of ego velocity with goal direction.
+
+    Markup-weighting is applied EXTERNALLY in run_CFM (spec §3.2). Returns
+    unweighted scalar reward.
+    """
+    ego_controls = ego_controls.transpose(
+        0, 1
+    )  # [2,H] vendor contract -> [H,2] internal
+    goal_unit = goal_dir / (torch.norm(goal_dir) + 1e-8)
+    speed = torch.norm(ego_controls, dim=-1, keepdim=True)  # [H, 1]
+    ego_unit = ego_controls / (speed + 1e-8)
+    alignment = (ego_unit * goal_unit).sum(dim=-1)  # [H] cosine similarity
+    # touch unused ped args so vmap doesn't choke on closed-over tensors
+    _ = ped_states.sum() * 0.0 + ped_velocities.sum() * 0.0
+    return alignment.sum() + _

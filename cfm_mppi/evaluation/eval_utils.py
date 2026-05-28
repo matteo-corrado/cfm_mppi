@@ -1,6 +1,9 @@
 import torch
 from cfm_mppi.reward import single_cbf_reward_fn_pairwise, single_goal_reward_fn
-from cfm_mppi.social_reward import single_proxemic_reward_fn
+from cfm_mppi.social_reward import (
+    single_proxemic_reward_fn,
+    single_legibility_reward_fn,
+)
 from dataclasses import dataclass
 from typing import List, Optional
 
@@ -75,6 +78,11 @@ def run_CFM(
             torch.func.grad(single_proxemic_reward_fn),
             in_dims=(0, None, None),
         )
+    if config.legibility_margin_coef > 0:
+        social_grad_fns["legibility"] = torch.vmap(
+            torch.func.grad(single_legibility_reward_fn),
+            in_dims=(0, None, None, None),
+        )
 
     for j in range(len(config.ode_times)):
         if control_history is not None:
@@ -113,7 +121,8 @@ def run_CFM(
         social_terms = []
         SOCIAL_TERM_META = [
             ("proxemic", False),
-            # leg/norm_side/norm_yield/group added in later tasks
+            ("legibility", True),
+            # norm_side/norm_yield/group added in later tasks
         ]
         for name, apply_markup in SOCIAL_TERM_META:
             if name not in social_grad_fns:
@@ -128,7 +137,13 @@ def run_CFM(
             ped_vel_now = (
                 obs_velocities[..., 0] if obs_velocities.dim() == 3 else obs_velocities
             )
-            grad = social_grad_fns[name](x_1_pred, ped_pos_now, ped_vel_now)
+            if name == "legibility":
+                goal_dir = goal_pos.squeeze(0) - start_pos.squeeze(0)
+                grad = social_grad_fns[name](
+                    x_1_pred, ped_pos_now, ped_vel_now, goal_dir
+                )
+            else:
+                grad = social_grad_fns[name](x_1_pred, ped_pos_now, ped_vel_now)
             grad_norm = torch.norm(grad, keepdim=True)
             normalized = grad * u_norm / (grad_norm + 1e-8)
             if apply_markup:
