@@ -1,5 +1,6 @@
 import torch
 from cfm_mppi.reward import single_cbf_reward_fn_pairwise, single_goal_reward_fn
+from cfm_mppi.social_reward import single_proxemic_reward_fn
 from dataclasses import dataclass
 from typing import List, Optional
 
@@ -67,6 +68,14 @@ def run_CFM(
     batched_cbf_grad_fn = torch.vmap(single_cbf_grad_fn, in_dims=(0, None, None, None))
     batched_goal_grad_fn = torch.vmap(single_goal_grad_fn, in_dims=(0, None))
 
+    # NEW — social grad fns (one entry per enabled social term; skip compile if coef = 0)
+    social_grad_fns = {}
+    if config.proxemic_margin_coef > 0:
+        social_grad_fns["proxemic"] = torch.vmap(
+            torch.func.grad(single_proxemic_reward_fn),
+            in_dims=(0, None, None),
+        )
+
     for j in range(len(config.ode_times)):
         if control_history is not None:
             noisy_action_seq[:, :, : control_history.shape[-1]] = control_history
@@ -100,10 +109,38 @@ def run_CFM(
             0, noisy_action_seq.shape[-1], device=config.device
         ).flip(0).unsqueeze(0).unsqueeze(0)
 
+        # NEW — social terms
+        social_terms = []
+        SOCIAL_TERM_META = [
+            ("proxemic", False),
+            # leg/norm_side/norm_yield/group added in later tasks
+        ]
+        for name, apply_markup in SOCIAL_TERM_META:
+            if name not in social_grad_fns:
+                continue
+            # obs_positions/obs_velocities are [n_peds, 2, horizon] in the real pipeline;
+            # social reward fns take static [n_peds, 2] — use the current timestep slice.
+            ped_pos_now = (
+                obs_positions[..., j] if obs_positions.dim() == 3 else obs_positions
+            )
+            ped_vel_now = (
+                obs_velocities[..., j] if obs_velocities.dim() == 3 else obs_velocities
+            )
+            grad = social_grad_fns[name](x_1_pred, ped_pos_now, ped_vel_now)
+            grad_norm = torch.norm(grad, keepdim=True)
+            normalized = grad * u_norm / (grad_norm + 1e-8)
+            if apply_markup:
+                normalized = normalized * markup
+            coef = getattr(config, f"{name}_margin_coef")
+            social_terms.append(coef * normalized)
+
         u_t_pred_new = (
             u_t_pred
             + config.goal_margin_coef * normalized_grad_goal
             + safe_coef * normalized_grad_cbf * markup
+            + sum(
+                social_terms, torch.zeros_like(u_t_pred)
+            )  # typed init: empty sum stays tensor
         )
         noisy_action_seq = (
             noisy_action_seq
