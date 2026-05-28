@@ -17,6 +17,8 @@ from cfm_mppi.evaluation.eval_utils import synthesize_control, CFMConfig
 from cfm_mppi.instrumentation import InstrumentationRecorder
 import sys
 
+from social_cfm_mppi.social.seeding import seed_episode
+
 dataset = sys.argv[1] if len(sys.argv) > 1 else "ucy"
 precision = sys.argv[2] if len(sys.argv) > 2 else "fp32"
 assert precision in ("fp32", "tf32"), f"precision must be fp32 or tf32, got {precision}"
@@ -123,6 +125,7 @@ recorder.write_hyperparams(
 recorder.write_env(directory_path, requested_precision=precision)
 
 for idx in range(n_scenarios):
+    seed_episode(idx)
     if dataset == "ucy" or dataset == "sdd":
         state_obs = batch_obs[idx]
         nan_mask = torch.isnan(state_obs).any(dim=(0, 2, 3))
