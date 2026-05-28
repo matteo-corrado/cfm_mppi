@@ -199,6 +199,10 @@ def run_CFM(
             normalized = grad * u_norm / (grad_norm + 1e-8)
             if apply_markup:
                 normalized = normalized * markup
+            if control_history is not None:
+                # parity with goal/cbf: don't let social grads update committed
+                # history slots (mask defined above when control_history is not None)
+                normalized = normalized * mask
             coef = getattr(config, f"{name}_margin_coef")
             social_terms.append(coef * normalized)
 

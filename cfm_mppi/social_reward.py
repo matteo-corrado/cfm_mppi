@@ -144,7 +144,9 @@ def single_norm_yield_reward_fn(
     ego_controls = ego_controls.transpose(0, 1)  # [2,H] -> [H,2] internal
     H = ego_controls.shape[0]
     ego_pos = _controls_to_positions(ego_controls)  # [H, 2]
-    t_idx = torch.arange(H, dtype=ego_controls.dtype).view(H, 1, 1)  # [H,1,1]
+    t_idx = torch.arange(H, dtype=ego_controls.dtype, device=ego_controls.device).view(
+        H, 1, 1
+    )  # [H,1,1] — device-matched (CUDA path) per codex review
     ped_pos_t = ped_states.unsqueeze(0) + ped_velocities.unsqueeze(0) * (
         t_idx * DT
     )  # [H, n_peds, 2]
