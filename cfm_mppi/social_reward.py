@@ -84,3 +84,34 @@ def single_legibility_reward_fn(
     # touch unused ped args so vmap doesn't choke on closed-over tensors
     _ = ped_states.sum() * 0.0 + ped_velocities.sum() * 0.0
     return alignment.sum() + _
+
+
+def single_norm_side_reward_fn(
+    ego_controls: torch.Tensor,  # [ctrl_dim=2, horizon] — vendor contract
+    ped_states: torch.Tensor,  # [n_peds, 2]
+    ped_velocities: torch.Tensor,  # [n_peds, 2]
+    preferred_side: float = -1.0,  # -1 = right-pass (US/EU)
+    w_corridor: float = 1.0,
+) -> torch.Tensor:
+    """Kalenberg asymmetric softplus on lateral offset vs preferred passing side."""
+    ego_controls = ego_controls.transpose(
+        0, 1
+    )  # [2,H] vendor contract -> [H,2] internal
+    xy = _controls_to_positions(ego_controls)  # [H, 2]
+    # transform to each ped's frame
+    theta = torch.atan2(ped_velocities[:, 1], ped_velocities[:, 0])
+    cos_t = torch.cos(-theta)
+    sin_t = torch.sin(-theta)
+    R = torch.stack(
+        [torch.stack([cos_t, -sin_t], dim=-1), torch.stack([sin_t, cos_t], dim=-1)],
+        dim=-2,
+    )
+    delta_world = xy.unsqueeze(1) - ped_states.unsqueeze(0)
+    delta = torch.einsum("npq,hnq->hnp", R, delta_world)
+    dy = delta[..., 1]
+    # asymmetric softplus: penalize wrong-side
+    wrong_side = torch.nn.functional.softplus(_SIGMOID_K * (preferred_side * dy))
+    # consider only peds in front (dx > 0)
+    dx = delta[..., 0]
+    front_mask = torch.sigmoid(_SIGMOID_K * dx)
+    return -(wrong_side * front_mask * w_corridor).sum()

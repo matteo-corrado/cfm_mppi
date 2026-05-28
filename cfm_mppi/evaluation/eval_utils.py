@@ -3,6 +3,7 @@ from cfm_mppi.reward import single_cbf_reward_fn_pairwise, single_goal_reward_fn
 from cfm_mppi.social_reward import (
     single_proxemic_reward_fn,
     single_legibility_reward_fn,
+    single_norm_side_reward_fn,
 )
 from dataclasses import dataclass
 from typing import List, Optional
@@ -83,6 +84,22 @@ def run_CFM(
             torch.func.grad(single_legibility_reward_fn),
             in_dims=(0, None, None, None),
         )
+    if config.norm_side_margin_coef > 0:
+
+        def _ns(
+            ego_controls,
+            ped_states,
+            ped_velocities,
+            _side=config.norm_side_preferred_side,
+        ):
+            return single_norm_side_reward_fn(
+                ego_controls, ped_states, ped_velocities, preferred_side=_side
+            )
+
+        social_grad_fns["norm_side"] = torch.vmap(
+            torch.func.grad(_ns),
+            in_dims=(0, None, None),
+        )
 
     for j in range(len(config.ode_times)):
         if control_history is not None:
@@ -122,7 +139,8 @@ def run_CFM(
         SOCIAL_TERM_META = [
             ("proxemic", False),
             ("legibility", True),
-            # norm_side/norm_yield/group added in later tasks
+            ("norm_side", False),
+            # norm_yield/group added in later tasks
         ]
         for name, apply_markup in SOCIAL_TERM_META:
             if name not in social_grad_fns:
