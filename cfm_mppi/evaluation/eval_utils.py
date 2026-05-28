@@ -13,6 +13,17 @@ class CFMConfig:
     safe_margin_coefs: Optional[List[float]] = None
     goal_margin_coef: float = 0.1
     device: str = "cuda"
+    # NEW — social CFM-bias coefs (0.0 = term disabled; matches safe_margin_coefs pattern)
+    proxemic_margin_coef: float = 0.0
+    legibility_margin_coef: float = 0.0
+    norm_side_margin_coef: float = 0.0
+    norm_yield_margin_coef: float = 0.0
+    group_margin_coef: float = 0.0
+    # NEW — per-term scalar params (closed over at grad-fn registration, R3 — the uniform
+    # 3-arg vmap call shape leaves no positional slot for them)
+    norm_side_preferred_side: float = -1.0  # -1 = right-pass (US/EU)
+    norm_yield_T_safe: float = 1.5
+    norm_yield_R_conflict: float = 1.0
 
 
 def run_CFM(
