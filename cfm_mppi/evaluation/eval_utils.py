@@ -4,6 +4,7 @@ from cfm_mppi.social_reward import (
     single_proxemic_reward_fn,
     single_legibility_reward_fn,
     single_norm_side_reward_fn,
+    single_norm_yield_reward_fn,
 )
 from dataclasses import dataclass
 from typing import List, Optional
@@ -100,6 +101,23 @@ def run_CFM(
             torch.func.grad(_ns),
             in_dims=(0, None, None),
         )
+    if config.norm_yield_margin_coef > 0:
+
+        def _ny(
+            ego_controls,
+            ped_states,
+            ped_velocities,
+            _T=config.norm_yield_T_safe,
+            _R=config.norm_yield_R_conflict,
+        ):
+            return single_norm_yield_reward_fn(
+                ego_controls, ped_states, ped_velocities, T_safe=_T, R_conflict=_R
+            )
+
+        social_grad_fns["norm_yield"] = torch.vmap(
+            torch.func.grad(_ny),
+            in_dims=(0, None, None),
+        )
 
     for j in range(len(config.ode_times)):
         if control_history is not None:
@@ -140,7 +158,8 @@ def run_CFM(
             ("proxemic", False),
             ("legibility", True),
             ("norm_side", False),
-            # norm_yield/group added in later tasks
+            ("norm_yield", False),
+            # group added in later tasks
         ]
         for name, apply_markup in SOCIAL_TERM_META:
             if name not in social_grad_fns:
