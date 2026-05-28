@@ -119,12 +119,14 @@ def run_CFM(
             if name not in social_grad_fns:
                 continue
             # obs_positions/obs_velocities are [n_peds, 2, horizon] in the real pipeline;
-            # social reward fns take static [n_peds, 2] — use the current timestep slice.
+            # social reward fns take a static [n_peds, 2] snapshot. Use the nearest-term
+            # slice (index 0), NOT the ODE-step index j — j is a diffusion step, unrelated
+            # to horizon timesteps, and j could exceed horizon (IndexError).
             ped_pos_now = (
-                obs_positions[..., j] if obs_positions.dim() == 3 else obs_positions
+                obs_positions[..., 0] if obs_positions.dim() == 3 else obs_positions
             )
             ped_vel_now = (
-                obs_velocities[..., j] if obs_velocities.dim() == 3 else obs_velocities
+                obs_velocities[..., 0] if obs_velocities.dim() == 3 else obs_velocities
             )
             grad = social_grad_fns[name](x_1_pred, ped_pos_now, ped_vel_now)
             grad_norm = torch.norm(grad, keepdim=True)
