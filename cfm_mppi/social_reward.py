@@ -177,3 +177,28 @@ def single_norm_yield_reward_fn(
     ttca_gate = torch.sigmoid(_SIGMOID_K * (T_safe - ttca))  # imminent only (valid)
     per_step = (robot_first * conflict_gate * ttca_gate).sum(dim=-1)  # [H]
     return -per_step.sum()  # R4: sum over horizon
+
+
+def single_group_reward_fn(
+    ego_controls: torch.Tensor,  # [ctrl_dim=2, horizon] — vendor contract
+    ped_states: torch.Tensor,  # [n_peds, 2]
+    group_pairs: torch.Tensor,  # [n_groups, 2] int indices into ped_states
+    sigma_group: float = 0.3,
+) -> torch.Tensor:
+    """Distance-to-group-line Gaussian penalty (penalize crossing between paired peds)."""
+    ego_controls = ego_controls.transpose(
+        0, 1
+    )  # [2,H] vendor contract -> [H,2] internal
+    xy = _controls_to_positions(ego_controls)  # [H, 2]
+    a = ped_states[group_pairs[:, 0]]  # [n_groups, 2]
+    b = ped_states[group_pairs[:, 1]]  # [n_groups, 2]
+    ab = b - a  # [n_groups, 2]
+    ab_len_sq = (ab * ab).sum(dim=-1) + 1e-6  # [n_groups]
+    ax = xy.unsqueeze(1) - a.unsqueeze(0)  # [H, n_groups, 2]
+    t = (ax * ab.unsqueeze(0)).sum(dim=-1) / ab_len_sq  # [H, n_groups]
+    t_clamped = torch.clamp(t, 0.0, 1.0)
+    proj = a.unsqueeze(0) + t_clamped.unsqueeze(-1) * ab.unsqueeze(0)
+    perp = xy.unsqueeze(1) - proj
+    d = torch.norm(perp, dim=-1)  # [H, n_groups]
+    cost = torch.exp(-(d * d) / (2 * sigma_group * sigma_group))
+    return -cost.sum()

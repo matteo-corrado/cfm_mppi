@@ -5,6 +5,7 @@ from cfm_mppi.social_reward import (
     single_legibility_reward_fn,
     single_norm_side_reward_fn,
     single_norm_yield_reward_fn,
+    single_group_reward_fn,
 )
 from dataclasses import dataclass
 from typing import List, Optional
@@ -30,6 +31,8 @@ class CFMConfig:
     norm_side_preferred_side: float = -1.0  # -1 = right-pass (US/EU)
     norm_yield_T_safe: float = 1.5
     norm_yield_R_conflict: float = 1.0
+    # NEW — group topology: [n_groups, 2] int indices into peds; None/empty = term off
+    group_pairs: Optional[torch.Tensor] = None
 
 
 def run_CFM(
@@ -118,6 +121,11 @@ def run_CFM(
             torch.func.grad(_ny),
             in_dims=(0, None, None),
         )
+    if config.group_margin_coef > 0:
+        social_grad_fns["group"] = torch.vmap(
+            torch.func.grad(single_group_reward_fn),
+            in_dims=(0, None, None),
+        )
 
     for j in range(len(config.ode_times)):
         if control_history is not None:
@@ -159,7 +167,7 @@ def run_CFM(
             ("legibility", True),
             ("norm_side", False),
             ("norm_yield", False),
-            # group added in later tasks
+            ("group", False),
         ]
         for name, apply_markup in SOCIAL_TERM_META:
             if name not in social_grad_fns:
@@ -179,6 +187,12 @@ def run_CFM(
                 grad = social_grad_fns[name](
                     x_1_pred, ped_pos_now, ped_vel_now, goal_dir
                 )
+            elif name == "group":
+                # group takes ped positions + group_pairs (int indices), NOT velocities.
+                # Skip if no groups configured (avoids None subscript crash).
+                if config.group_pairs is None or config.group_pairs.numel() == 0:
+                    continue
+                grad = social_grad_fns[name](x_1_pred, ped_pos_now, config.group_pairs)
             else:
                 grad = social_grad_fns[name](x_1_pred, ped_pos_now, ped_vel_now)
             grad_norm = torch.norm(grad, keepdim=True)
