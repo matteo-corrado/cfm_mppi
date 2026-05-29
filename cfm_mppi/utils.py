@@ -48,18 +48,33 @@ def grad_barrier_exp(r_ab, v_rel, dt):
     return jax.grad(V)(r_ab)
 
 class HumanAgent:
-    def __init__(self, robot_goal, radius=0.5, dt=0.1, random_generator=None):
+    def __init__(self, robot_goal, radius=0.5, dt=0.1, random_generator=None, spawn_bounds=None):
         if random_generator is None:
             random_generator = np.random.RandomState()
         
         self.rng = random_generator
+
+        # ===================== THESIS-SOCIAL EDIT (BEGIN) =====================
+        # Fork: matteo-corrado/cfm_mppi @ thesis/social. Added `spawn_bounds` so
+        # social scenarios (corridor vs plaza) can physically vary pedestrian
+        # placement; upstream hardcodes the spawn+goal box as [-2, 8]^2.
+        #   spawn_bounds=None                  -> upstream default [-2, 8]^2
+        #   spawn_bounds=((xlo,xhi),(ylo,yhi)) -> per-axis box (narrow corridor)
+        # None path uses the SAME single rng.uniform(-2, 8, size=2) draw as
+        # upstream, so a default-constructed agent is byte-identical to before.
+        def _draw_xy():
+            if spawn_bounds is None:
+                return self.rng.uniform(-2, 8, size=(2,))
+            (xlo, xhi), (ylo, yhi) = spawn_bounds
+            return np.array([self.rng.uniform(xlo, xhi), self.rng.uniform(ylo, yhi)])
+        # ====================== THESIS-SOCIAL EDIT (END) ======================
         
         while True:
-            self.start = self.rng.uniform(-2, 8, size=(2,))
+            self.start = _draw_xy()
             if np.linalg.norm(self.start) >= 1.5:
                 break
         while True:
-            self.goal = self.rng.uniform(-2, 8, size=(2,))
+            self.goal = _draw_xy()
             if np.linalg.norm(self.goal - robot_goal) >= 2.0:
                 break
                 
