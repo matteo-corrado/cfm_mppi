@@ -35,6 +35,17 @@ class CFMConfig:
     group_pairs: Optional[torch.Tensor] = None
 
 
+def _social_now_index(seq_len, control_history):
+    """Index of the 'current' pedestrian frame in a [.., horizon] sequence laid
+    out as [committed-history | future] (synthesize_control prepends
+    obstacle_state_history when control history exists). 'Now' is the first future
+    frame = the committed-history length (0 when there is no history). Clamped to the
+    sequence. Replaces the original obs_positions[..., j] (ODE-step index, wrong axis)
+    and the later [..., 0] (the oldest committed frame, stale for t>=1)."""
+    idx = control_history.shape[-1] if control_history is not None else 0
+    return min(idx, seq_len - 1)
+
+
 def run_CFM(
     model,
     config: CFMConfig,
@@ -172,16 +183,20 @@ def run_CFM(
         for name, apply_markup in SOCIAL_TERM_META:
             if name not in social_grad_fns:
                 continue
-            # obs_positions/obs_velocities are [n_peds, 2, horizon] in the real pipeline;
-            # social reward fns take a static [n_peds, 2] snapshot. Use the nearest-term
-            # slice (index 0), NOT the ODE-step index j — j is a diffusion step, unrelated
-            # to horizon timesteps, and j could exceed horizon (IndexError).
-            ped_pos_now = (
-                obs_positions[..., 0] if obs_positions.dim() == 3 else obs_positions
-            )
-            ped_vel_now = (
-                obs_velocities[..., 0] if obs_velocities.dim() == 3 else obs_velocities
-            )
+            # Collapse the [n_peds, 2, horizon] sequence to the CURRENT [n_peds, 2]
+            # snapshot the social reward fns expect. synthesize_control lays the
+            # sequence out as [committed-history | future], so 'now' is the first
+            # future frame at index = control-history length (0 when no history) — NOT
+            # index 0, which is the OLDEST committed frame for t>=1 (the stale-snapshot
+            # bug), and NOT the ODE-step index j (wrong axis). See _social_now_index +
+            # tests/social/test_cfm_social_snapshot.py.
+            if obs_positions.dim() == 3:
+                _now = _social_now_index(obs_positions.shape[-1], control_history)
+                ped_pos_now = obs_positions[..., _now]
+                ped_vel_now = obs_velocities[..., _now]
+            else:
+                ped_pos_now = obs_positions
+                ped_vel_now = obs_velocities
             if name == "legibility":
                 goal_dir = goal_pos.squeeze(0) - start_pos.squeeze(0)
                 grad = social_grad_fns[name](
