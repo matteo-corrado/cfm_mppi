@@ -10,10 +10,13 @@ Returns scalar (negative cost = positive reward — CFM treats higher reward as 
 Sign discontinuities are sigmoid-gated (k≈10) per spec §3.1.
 """
 
+from typing import NamedTuple
+
 import torch
 
 DT = 0.1
 _SIGMOID_K = 10.0
+_M_ALIGN = 0.3
 
 
 def _controls_to_positions(ego_controls: torch.Tensor) -> torch.Tensor:
@@ -23,6 +26,81 @@ def _controls_to_positions(ego_controls: torch.Tensor) -> torch.Tensor:
     Same result as upstream reward.py cumsum(dim=1) on [ctrl_dim, horizon].
     """
     return torch.cumsum(ego_controls * DT, dim=0)
+
+
+class NormSideStep(NamedTuple):
+    """Per-(robot-batch, ped) decomposition of the norm passing-side step term.
+
+    Every field is [B, n_peds] where B is the robot batch dim (CFM horizon H, MPPI
+    n_samples, or 1 for the offline metric). Single source of truth shared by the CFM
+    reward, the MPPI cost, and the side_compliance metric so the three cannot drift
+    (spec v2 §3.1, §10). pen_term/coh_num/coh_den drive the cost; membership/dy drive
+    the metric's qualify + compliance-sign.
+    """
+
+    pen_term: torch.Tensor  # membership * wrong-side penalty (the cost summand)
+    membership: torch.Tensor  # moving * align * closing * inrange (metric qualify gate)
+    coh_num: torch.Tensor  # moving * align * inrange (coherence numerator)
+    coh_den: torch.Tensor  # moving * inrange         (coherence denominator)
+    dy: torch.Tensor  # robot lateral offset in each ped's heading frame (metric sign)
+
+
+def _norm_side_step(
+    robot_xy: torch.Tensor,  # [B, 2] world-frame robot positions
+    robot_vel: torch.Tensor,  # [B, 2] world-frame robot velocities
+    ped_xy: torch.Tensor,  # [n_peds, 2] world-frame ped positions
+    ped_vel: torch.Tensor,  # [n_peds, 2] world-frame ped velocities
+    preferred_side: float = -1.0,
+    v_min: float = 0.3,
+    max_range: float = 5.0,
+) -> "NormSideStep":
+    """Crowd-robust norm passing-side membership + penalty, per (robot-batch, ped).
+
+    All inputs are PHYSICAL world-frame tensors; each caller supplies robot_vel for its
+    own dynamics (CFM: SI control == world velocity; MPPI: unicycle v*[cosθ,sinθ];
+    metric: finite-diff of the dumped trajectory). The ONLY hard gate is `moving` on the
+    PED speed — constant w.r.t. ego controls, so it is differentiable-safe (the reaction
+    iso_below_speed / norm_yield hard-mask precedent). align/closing/inrange are smooth
+    sigmoids. Spec v2 §3.1.
+    """
+    eps = 1e-8
+    speed = torch.norm(ped_vel, dim=-1)  # [n_peds]
+    moving = (speed > v_min).to(robot_xy.dtype).unsqueeze(0)  # [1, n_peds] HARD
+    theta = torch.atan2(ped_vel[:, 1], ped_vel[:, 0])  # [n_peds] ped heading
+    cos_t = torch.cos(-theta)
+    sin_t = torch.sin(-theta)
+    R = torch.stack(
+        [torch.stack([cos_t, -sin_t], dim=-1), torch.stack([sin_t, cos_t], dim=-1)],
+        dim=-2,
+    )  # [n_peds, 2, 2]
+    delta_world = robot_xy.unsqueeze(1) - ped_xy.unsqueeze(0)  # [B, n_peds, 2]
+    delta = torch.einsum("pqr,bpr->bpq", R, delta_world)  # [B, n_peds, 2]
+    dy = delta[..., 1]  # [B, n_peds] robot lateral in ped frame
+
+    h_ped = ped_vel / (speed.unsqueeze(-1) + eps)  # [n_peds, 2]
+    r_speed = torch.norm(robot_vel, dim=-1, keepdim=True)  # [B, 1]
+    h_robot = robot_vel / (r_speed + eps)  # [B, 2]
+    dot = torch.einsum("bd,pd->bp", h_robot, h_ped)  # [B, n_peds]
+    align = torch.sigmoid(_SIGMOID_K * (-dot - _M_ALIGN))  # [B, n_peds] ONCOMING
+
+    rel_v = robot_vel.unsqueeze(1) - ped_vel.unsqueeze(0)  # [B, n_peds, 2]
+    ped_minus_robot = ped_xy.unsqueeze(0) - robot_xy.unsqueeze(1)  # [B, n_peds, 2]
+    closing = torch.sigmoid(
+        _SIGMOID_K * (ped_minus_robot * rel_v).sum(dim=-1)
+    )  # [B, n_peds] APPROACHING (range-rate < 0)
+
+    dist = torch.norm(delta_world, dim=-1)  # [B, n_peds]
+    inrange = torch.sigmoid(_SIGMOID_K * (max_range - dist))  # [B, n_peds]
+
+    pen = torch.nn.functional.softplus(
+        _SIGMOID_K * (preferred_side * dy)
+    )  # [B, n_peds] wrong-side penalty
+
+    membership = moving * align * closing * inrange  # [B, n_peds]
+    pen_term = membership * pen
+    coh_num = moving * align * inrange
+    coh_den = moving * inrange
+    return NormSideStep(pen_term, membership, coh_num, coh_den, dy)
 
 
 def single_proxemic_reward_fn(
