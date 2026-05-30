@@ -64,6 +64,10 @@ def _norm_side_step(
     sigmoids. Spec v2 §3.1.
     """
     eps = 1e-8
+    ped_xy = ped_xy.to(
+        robot_xy.dtype
+    )  # harmonize caller dtype (SSOT; parity by construction)
+    ped_vel = ped_vel.to(robot_xy.dtype)
     speed = torch.norm(ped_vel, dim=-1)  # [n_peds]
     moving = (speed > v_min).to(robot_xy.dtype).unsqueeze(0)  # [1, n_peds] HARD
     theta = torch.atan2(ped_vel[:, 1], ped_vel[:, 0])  # [n_peds] ped heading
@@ -183,9 +187,6 @@ def single_norm_side_reward_fn(
     Spec v2 §3.1-3.3.
     """
     ego_controls = ego_controls.transpose(0, 1)  # [2,H] vendor contract -> [H,2]
-    dtype = ego_controls.dtype
-    ped_states = ped_states.to(dtype)
-    ped_velocities = ped_velocities.to(dtype)
     xy = _controls_to_positions(ego_controls)  # [H, 2] robot positions
     robot_vel = ego_controls  # [H, 2] single-integrator SI == world velocity
     step = _norm_side_step(
