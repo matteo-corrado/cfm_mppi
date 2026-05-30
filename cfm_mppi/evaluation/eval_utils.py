@@ -283,6 +283,7 @@ def synthesize_control(
     planning_horizon,
     histories: dict = None,
     recorder=None,
+    sink=None,
     **mppi_kwargs,
 ):
     """
@@ -341,9 +342,15 @@ def synthesize_control(
         pos_obs_seq_cfm,
         vel_obs_seq,
         control_history_sin,
+        sink=sink,
     ).detach()
     if recorder is not None:
         recorder.end_section("cfm")
+    if sink is not None:
+        # controls_sin is the CFM generative-prior proposal set [S,2,H]; the proposal
+        # source for §4.10, NOT the post-MPPI elite (x_sin). history_len is the
+        # valid-future boundary on H.
+        sink.add_step(controls_sin, history_len)
 
     if recorder is not None:
         recorder.start_section("mppi")
