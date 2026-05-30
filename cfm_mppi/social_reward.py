@@ -76,10 +76,19 @@ def single_legibility_reward_fn(
 
     For each ped, sigma_t = signed offset of the robot rollout from the ped's
     constant-velocity path (sign = rounding side, |sigma| = miss distance = Social
-    Momentum "confidence"). Saturated as tanh(sigma/sigma_ref) so legibility rewards
-    a CLEAR side, not a wide detour. markup_t = 1.01^(T-t) front-loads early steps
-    (Dragan). The net magnitude |sum_t markup_t * sigma_tilde| makes a dithering
+    Momentum "confidence"). Saturated as clamp(sigma/sigma_ref, -1, 1) so legibility
+    rewards a CLEAR side, not a wide detour. markup_t = 1.01^(T-t) front-loads early
+    steps (Dragan). The net magnitude |sum_t markup_t * sigma_tilde| makes a dithering
     rollout self-cancel and is side-agnostic (norm_side owns WHICH side).
+
+    RENORM SURVIVAL (codex H1/H2, mirrors the norm_yield lesson): run_CFM unit-
+    normalizes this term's gradient (eval_utils.py:254), which ERASES any soft
+    attenuation — only an EXACT-zero gradient stays inert after renormalization.
+    So (a) saturation is a hard clamp (grad EXACTLY 0 once |sigma|>sigma_ref, no
+    widening push for renorm to restore) not tanh (asymptotic, never zero); and
+    (b) the range/speed gate is a HARD detached 0/1 mask (an out-of-range or slow
+    ped contributes EXACTLY 0 grad, truly inert) not a sigmoid product (which never
+    reaches 0 and renormalizes back to full steering).
 
     Grounding: Mavrogiannis Social Momentum (sign=side, magnitude=confidence) +
     Goyal 2026 (interaction-level = passing side) + Dragan 2013 (T-t front-loading).
@@ -104,15 +113,20 @@ def single_legibility_reward_fn(
     p_t = p0 + vi * t  # [H, n_peds, 2] ped CV position at each rollout step
     r = xr.unsqueeze(1) - p_t  # [H, n_peds, 2] robot(step) - ped(step)
     sigma = (r * n.unsqueeze(0)).sum(dim=-1)  # [H, n_peds] signed offset from path
-    sigma_tilde = torch.tanh(sigma / sigma_ref)  # bounded passing-side confidence
+    sigma_tilde = torch.clamp(
+        sigma / sigma_ref, -1.0, 1.0
+    )  # hard saturation: grad EXACTLY 0 past sigma_ref (renorm-proof, not tanh)
     markup = (
         1.01
         ** torch.arange(H, dtype=ego_controls.dtype, device=ego_controls.device).flip(0)
     ).view(H, 1)  # [H,1] Dragan front-load, INTERNAL
     C = (markup * sigma_tilde).sum(dim=0)  # [n_peds] net early-weighted commitment
     dist = torch.norm(ped_states, dim=-1)  # [n_peds] robot(origin) -> ped now
-    gate = torch.sigmoid(_SIGMOID_K * (max_range - dist)) * torch.sigmoid(
-        _SIGMOID_K * (speed - v_min)
+    # HARD detached 0/1 gate (NOT a sigmoid product): out-of-range / slow ped -> EXACTLY
+    # 0 grad, truly inert after run_CFM's per-term gradient normalization. Constant in
+    # ego_controls (no grad through the comparison), same as norm_yield's masks.
+    gate = (dist < max_range).to(sigma.dtype) * (speed > v_min).to(
+        sigma.dtype
     )  # [n_peds] nearby AND moving
     return (gate * torch.sqrt(C * C + 1e-8)).sum()
 
