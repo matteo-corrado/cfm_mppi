@@ -170,29 +170,37 @@ def single_norm_side_reward_fn(
     ped_velocities: torch.Tensor,  # [n_peds, 2]
     preferred_side: float = -1.0,  # -1 = right-pass (US/EU)
     w_corridor: float = 1.0,
+    v_min: float = 0.3,
+    max_range: float = 5.0,
 ) -> torch.Tensor:
-    """Kalenberg asymmetric softplus on lateral offset vs preferred passing side."""
-    ego_controls = ego_controls.transpose(
-        0, 1
-    )  # [2,H] vendor contract -> [H,2] internal
-    xy = _controls_to_positions(ego_controls)  # [H, 2]
-    # transform to each ped's frame
-    theta = torch.atan2(ped_velocities[:, 1], ped_velocities[:, 0])
-    cos_t = torch.cos(-theta)
-    sin_t = torch.sin(-theta)
-    R = torch.stack(
-        [torch.stack([cos_t, -sin_t], dim=-1), torch.stack([sin_t, cos_t], dim=-1)],
-        dim=-2,
+    """Crowd-robust norm passing-side CFM bias.
+
+    Per horizon step: a GATED SUM over peds of (membership · wrong-side penalty), scaled by
+    a corridor-coherence factor coh_t ∈ [0,1] (fraction of moving, in-range peds that are
+    oncoming). C_norm = w_corridor · Σ_t coh_t · Σ_j w_j·pen_j; returns -C_norm (reward).
+    Gates: moving (HARD, ped-speed) / oncoming (align margin) / closing / in-range — all
+    via the shared _norm_side_step. Mirrors norm_side_cost term-for-term (locus parity).
+    Spec v2 §3.1-3.3.
+    """
+    ego_controls = ego_controls.transpose(0, 1)  # [2,H] vendor contract -> [H,2]
+    dtype = ego_controls.dtype
+    ped_states = ped_states.to(dtype)
+    ped_velocities = ped_velocities.to(dtype)
+    xy = _controls_to_positions(ego_controls)  # [H, 2] robot positions
+    robot_vel = ego_controls  # [H, 2] single-integrator SI == world velocity
+    step = _norm_side_step(
+        xy,
+        robot_vel,
+        ped_states,
+        ped_velocities,
+        preferred_side=preferred_side,
+        v_min=v_min,
+        max_range=max_range,
     )
-    delta_world = xy.unsqueeze(1) - ped_states.unsqueeze(0)
-    delta = torch.einsum("npq,hnq->hnp", R, delta_world)
-    dy = delta[..., 1]
-    # asymmetric softplus: penalize wrong-side
-    wrong_side = torch.nn.functional.softplus(_SIGMOID_K * (preferred_side * dy))
-    # consider only peds in front (dx > 0)
-    dx = delta[..., 0]
-    front_mask = torch.sigmoid(_SIGMOID_K * dx)
-    return -(wrong_side * front_mask * w_corridor).sum()
+    pen_sum = step.pen_term.sum(dim=-1)  # [H] gated sum over peds
+    coh = step.coh_num.sum(dim=-1) / (step.coh_den.sum(dim=-1) + 1e-8)  # [H]
+    g = coh * pen_sum  # [H]
+    return -(w_corridor * g.sum())
 
 
 def single_norm_yield_reward_fn(
