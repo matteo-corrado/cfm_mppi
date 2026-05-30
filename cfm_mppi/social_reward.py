@@ -65,25 +65,56 @@ def single_proxemic_reward_fn(
 
 def single_legibility_reward_fn(
     ego_controls: torch.Tensor,  # [ctrl_dim=2, horizon] — vendor contract
-    ped_states: torch.Tensor,  # [n_peds, 2] — unused, signature-matched for vmap
-    ped_velocities: torch.Tensor,  # [n_peds, 2] — unused
-    goal_dir: torch.Tensor,  # [2] vector toward goal in robot frame
+    ped_states: torch.Tensor,  # [n_peds, 2] positions
+    ped_velocities: torch.Tensor,  # [n_peds, 2]
+    sigma_ref: float = 0.5,  # passing-side confidence scale [m]
+    v_min: float = 0.3,  # min ped speed for a defined heading [m/s]
+    max_range: float = 5.0,  # range gate [m] (matches proxemic)
 ) -> torch.Tensor:
-    """Reward alignment of ego velocity with goal direction.
+    """Interaction-level legibility: reward early, decisive commitment to HOW the
+    robot rounds each conflicting pedestrian.
 
-    Markup-weighting is applied EXTERNALLY in run_CFM (spec §3.2). Returns
-    unweighted scalar reward.
+    For each ped, sigma_t = signed offset of the robot rollout from the ped's
+    constant-velocity path (sign = rounding side, |sigma| = miss distance = Social
+    Momentum "confidence"). Saturated as tanh(sigma/sigma_ref) so legibility rewards
+    a CLEAR side, not a wide detour. markup_t = 1.01^(T-t) front-loads early steps
+    (Dragan). The net magnitude |sum_t markup_t * sigma_tilde| makes a dithering
+    rollout self-cancel and is side-agnostic (norm_side owns WHICH side).
+
+    Grounding: Mavrogiannis Social Momentum (sign=side, magnitude=confidence) +
+    Goyal 2026 (interaction-level = passing side) + Dragan 2013 (T-t front-loading).
+    Markup is INTERNAL here (the net-magnitude form couples horizon steps, so the
+    upstream external-markup multiply no longer applies). Returns the unweighted
+    reward (higher = more legible); w_leg applied externally in run_CFM.
     """
-    ego_controls = ego_controls.transpose(
-        0, 1
-    )  # [2,H] vendor contract -> [H,2] internal
-    goal_unit = goal_dir / (torch.norm(goal_dir) + 1e-8)
-    speed = torch.norm(ego_controls, dim=-1, keepdim=True)  # [H, 1]
-    ego_unit = ego_controls / (speed + 1e-8)
-    alignment = (ego_unit * goal_unit).sum(dim=-1)  # [H] cosine similarity
-    # touch unused ped args so vmap doesn't choke on closed-over tensors
-    _ = ped_states.sum() * 0.0 + ped_velocities.sum() * 0.0
-    return alignment.sum() + _
+    ego_controls = ego_controls.transpose(0, 1)  # [2,H] -> [H,2]
+    H = ego_controls.shape[0]
+    xr = _controls_to_positions(ego_controls)  # [H, 2] robot rollout
+    t = (
+        (
+            (torch.arange(H, dtype=ego_controls.dtype, device=ego_controls.device) + 1)
+            * DT  # xr[i]=cumsum is REACHED at (i+1)*DT — off-by-one norm_yield fixed (bd088f1)
+        ).view(H, 1, 1)
+    )  # [H,1,1] ped-propagation time, aligned to robot rollout step
+    p0 = ped_states.unsqueeze(0)  # [1, n_peds, 2]
+    vi = ped_velocities.unsqueeze(0)  # [1, n_peds, 2]
+    speed = torch.norm(ped_velocities, dim=-1)  # [n_peds]
+    h = ped_velocities / (speed.unsqueeze(-1) + 1e-8)  # [n_peds, 2] heading unit
+    n = torch.stack([-h[:, 1], h[:, 0]], dim=-1)  # [n_peds, 2] left-normal to path
+    p_t = p0 + vi * t  # [H, n_peds, 2] ped CV position at each rollout step
+    r = xr.unsqueeze(1) - p_t  # [H, n_peds, 2] robot(step) - ped(step)
+    sigma = (r * n.unsqueeze(0)).sum(dim=-1)  # [H, n_peds] signed offset from path
+    sigma_tilde = torch.tanh(sigma / sigma_ref)  # bounded passing-side confidence
+    markup = (
+        1.01
+        ** torch.arange(H, dtype=ego_controls.dtype, device=ego_controls.device).flip(0)
+    ).view(H, 1)  # [H,1] Dragan front-load, INTERNAL
+    C = (markup * sigma_tilde).sum(dim=0)  # [n_peds] net early-weighted commitment
+    dist = torch.norm(ped_states, dim=-1)  # [n_peds] robot(origin) -> ped now
+    gate = torch.sigmoid(_SIGMOID_K * (max_range - dist)) * torch.sigmoid(
+        _SIGMOID_K * (speed - v_min)
+    )  # [n_peds] nearby AND moving
+    return (gate * torch.sqrt(C * C + 1e-8)).sum()
 
 
 def single_norm_side_reward_fn(
