@@ -120,7 +120,7 @@ def run_CFM(
     if config.legibility_margin_coef > 0:
         social_grad_fns["legibility"] = torch.vmap(
             torch.func.grad(single_legibility_reward_fn),
-            in_dims=(0, None, None, None),
+            in_dims=(0, None, None),
         )
     if config.norm_side_margin_coef > 0:
 
@@ -198,7 +198,7 @@ def run_CFM(
         social_terms = []
         SOCIAL_TERM_META = [
             ("proxemic", False),
-            ("legibility", True),
+            ("legibility", False),
             ("norm_side", False),
             ("norm_yield", False),
             ("group", False),
@@ -229,17 +229,15 @@ def run_CFM(
             # The gradient is unit-normalized below, so the chain-rule space_scale
             # factor on it is irrelevant; only the (now physically-correct) direction
             # matters. This matches the MPPI locus, which already receives physical
-            # PedSnapshot geometry. goal_dir is a direction (legibility is a cosine)
-            # and group_pairs are integer indices, so neither needs scaling.
+            # PedSnapshot geometry. legibility is now a metre-scaled SPATIAL term
+            # (signed offset from each ped's CV path), so the * ss physical-frame
+            # scaling is load-bearing for its sigma_ref/max_range/v_min gates, same
+            # as the other spatial terms. group_pairs are integer indices, so they
+            # do not need scaling.
             # See docs memory/context/architectural-findings.md (2026-05-30).
             ss = config.space_scale
             xr_phys = x_1_pred * ss
-            if name == "legibility":
-                goal_dir = goal_pos.squeeze(0) - start_pos.squeeze(0)
-                grad = social_grad_fns[name](
-                    xr_phys, ped_pos_now * ss, ped_vel_now * ss, goal_dir
-                )
-            elif name == "group":
+            if name == "group":
                 # group takes ped positions + group_pairs (int indices), NOT velocities.
                 # Skip if no groups configured (avoids None subscript crash).
                 if config.group_pairs is None or config.group_pairs.numel() == 0:
@@ -248,6 +246,8 @@ def run_CFM(
                     xr_phys, ped_pos_now * ss, config.group_pairs
                 )
             else:
+                # legibility now takes (controls, ped_pos, ped_vel) like the others —
+                # signed offset from each ped's CV path, physical frame (ss-scaled).
                 grad = social_grad_fns[name](
                     xr_phys, ped_pos_now * ss, ped_vel_now * ss
                 )
