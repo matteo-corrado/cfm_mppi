@@ -46,6 +46,28 @@ def _social_now_index(seq_len, control_history):
     return min(idx, seq_len - 1)
 
 
+def _social_ped_snapshot(obs_positions, obs_velocities, control_history, dt):
+    """Current pedestrian (position, velocity) for the social reward, recovered from
+    the [committed-history | future] sequence run_CFM receives.
+
+    synthesize_control builds the future half as ``current + cumsum(vel * dt)``, so the
+    first future column (index = committed-history length, or 0 with no history) holds
+    ``current + vel*dt`` -- one step AHEAD, not the current frame. Remove one velocity
+    step to recover the exact current frame. Position and velocity are scaled
+    identically (``/ space_scale`` in run_CFM), velocity is translation-invariant so the
+    ego-relative shift cancels, and the future half repeats the current velocity, so
+    ``obs_velocities[..., i]`` IS the current velocity and the subtraction is exact. The
+    CBF path consumes the full time-aligned sequence separately and is unaffected.
+
+    Coupled to synthesize_control's cumsum construction; pinned by
+    tests/social/test_cfm_social_snapshot.py.
+    """
+    i = _social_now_index(obs_positions.shape[-1], control_history)
+    vel = obs_velocities[..., i]
+    pos = obs_positions[..., i] - vel * dt
+    return pos, vel
+
+
 def run_CFM(
     model,
     config: CFMConfig,
@@ -184,16 +206,17 @@ def run_CFM(
             if name not in social_grad_fns:
                 continue
             # Collapse the [n_peds, 2, horizon] sequence to the CURRENT [n_peds, 2]
-            # snapshot the social reward fns expect. synthesize_control lays the
-            # sequence out as [committed-history | future], so 'now' is the first
-            # future frame at index = control-history length (0 when no history) — NOT
-            # index 0, which is the OLDEST committed frame for t>=1 (the stale-snapshot
-            # bug), and NOT the ODE-step index j (wrong axis). See _social_now_index +
-            # tests/social/test_cfm_social_snapshot.py.
+            # snapshot the social reward fns expect. synthesize_control lays it out
+            # as [committed-history | future] and builds the future half via
+            # current + cumsum(vel*dt), so the first future column (index = history
+            # length, 0 when none) is current + vel*dt -- one step AHEAD.
+            # _social_ped_snapshot removes one velocity step to recover the exact
+            # current frame (NOT the [...,0] stale frame, NOT the ODE-step index j).
+            # See tests/social/test_cfm_social_snapshot.py.
             if obs_positions.dim() == 3:
-                _now = _social_now_index(obs_positions.shape[-1], control_history)
-                ped_pos_now = obs_positions[..., _now]
-                ped_vel_now = obs_velocities[..., _now]
+                ped_pos_now, ped_vel_now = _social_ped_snapshot(
+                    obs_positions, obs_velocities, control_history, config.dt
+                )
             else:
                 ped_pos_now = obs_positions
                 ped_vel_now = obs_velocities
