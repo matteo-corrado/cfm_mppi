@@ -29,8 +29,8 @@ class CFMConfig:
     # NEW — per-term scalar params (closed over at grad-fn registration, R3 — the uniform
     # 3-arg vmap call shape leaves no positional slot for them)
     norm_side_preferred_side: float = -1.0  # -1 = right-pass (US/EU)
-    norm_yield_T_safe: float = 1.5
-    norm_yield_R_conflict: float = 1.0
+    norm_yield_tau: float = 1.5  # PET conflict time-window [s]
+    norm_yield_sigma: float = 0.5  # PET "on the ped's path" spatial scale [m]
     # NEW — group topology: [n_groups, 2] int indices into peds; None/empty = term off
     group_pairs: Optional[torch.Tensor] = None
 
@@ -143,11 +143,11 @@ def run_CFM(
             ego_controls,
             ped_states,
             ped_velocities,
-            _T=config.norm_yield_T_safe,
-            _R=config.norm_yield_R_conflict,
+            _tau=config.norm_yield_tau,
+            _sigma=config.norm_yield_sigma,
         ):
             return single_norm_yield_reward_fn(
-                ego_controls, ped_states, ped_velocities, T_safe=_T, R_conflict=_R
+                ego_controls, ped_states, ped_velocities, tau=_tau, sigma=_sigma
             )
 
         social_grad_fns["norm_yield"] = torch.vmap(

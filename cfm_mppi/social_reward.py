@@ -119,66 +119,66 @@ def single_norm_side_reward_fn(
 
 def single_norm_yield_reward_fn(
     ego_controls: torch.Tensor,  # [ctrl_dim=2, horizon] SI velocities (vx, vy) — vendor contract
-    ped_states: torch.Tensor,  # [n_peds, 2]
+    ped_states: torch.Tensor,  # [n_peds, 2] current positions
     ped_velocities: torch.Tensor,  # [n_peds, 2]
-    T_safe: float = 1.5,
-    R_conflict: float = 1.0,
+    tau: float = 1.5,  # PET conflict time-window [s] (bell width)
+    sigma: float = 0.5,  # "on the ped's path" spatial scale [m]
+    v_min: float = 0.3,  # g_pedspeed threshold [m/s]
+    max_range: float = 5.0,  # g_range cutoff [m] (matches proxemic)
 ) -> torch.Tensor:
-    """TTCP-asymmetric yield reward. Penalize robot crossing a conflict point first.
+    """Temporal arrival-order (PET) yield reward at the robot-trajectory crossing.
 
-    R4 (horizon aggregation): rolls out ego positions across the WHOLE horizon and
-    sums the per-step penalty, so torch.func.grad flows to every control column.
-    R1 (per-agent CP): closest points computed per agent at t*; miss-distance gates a
-    genuine near-conflict. No heading rotation — CFM operates on SI velocities.
+    Resolves M1 (integration-risks.md): the prior CPA `robot_first` sigmoid was
+    degenerate (t_robot ≡ t_ped ≡ ttca → constant 0.5). This scores the Post-
+    Encroachment-Time at the point where the pedestrian's predicted constant-velocity
+    path crosses the robot's ACTUAL rollout, found by projecting each rollout point onto
+    the ped's CV line. PET = s* − t·DT (ped-arrival − robot-arrival).
 
-    >>> MATH REVIEW REQUIRED (M1 / integration-risks.md) <<<
-    The `robot_first` term below uses CPA-based per-agent times. But at the closest
-    point of approach BOTH agents reach their CP simultaneously, so t_robot == t_ped ==
-    ttca by construction and `sigmoid(K*(t_ped - t_robot)) == 0.5` — the passing-order
-    asymmetry DEGENERATES to a constant. A correct "who yields" cost needs a SHARED
-    spatial conflict point (path-ray intersection), then arrival times to THAT point
-    differ. Leaving the CPA form as a placeholder; `conflict_gate` + `ttca_gate` are
-    valid, but `robot_first` is NOT meaningful until the conflict-point definition is
-    replaced. test_norm_yield_penalizes_robot_first xfails against this placeholder.
+    The who-first magnitude is the BELL softplus(PET)·exp(−PET²/2τ²): a hump peaked at a
+    tight near-simultaneous crossing, decaying to ~0 BOTH for PET≫τ (robot cleared the
+    crossing with room — no temporal conflict; whether it passed too close in front is the
+    spatial PROXEMIC term's job, keeping the two terms orthogonal) AND for PET<0 (robot
+    yielded behind). The non-monotonicity is intentional: it gives two low-cost basins
+    (clear-ahead vs yield-behind) with the tight crossing as the costly ridge between, so
+    the planner resolves a conflict by whichever it has room for. Locus-identical to
+    norm_yield_cost. See spec docs/superpowers/specs/2026-05-30-norm-yield-temporal-design.md.
+
+    R4: rolls out the WHOLE horizon and sums the per-step penalty so torch.func.grad
+    flows to every control column. World/SI frame — CFM operates on SI velocities (no
+    heading), and PET is frame-free. Returns unweighted −C_yield (weight applied
+    externally via norm_yield_margin_coef).
     """
-    ego_controls = ego_controls.transpose(0, 1)  # [2,H] -> [H,2] internal
+    ego_controls = ego_controls.transpose(
+        0, 1
+    )  # [2,H] vendor contract -> [H,2] internal
     H = ego_controls.shape[0]
-    ego_pos = _controls_to_positions(ego_controls)  # [H, 2]
-    t_idx = torch.arange(H, dtype=ego_controls.dtype, device=ego_controls.device).view(
-        H, 1, 1
-    )  # [H,1,1] — device-matched (CUDA path) per codex review
-    ped_pos_t = ped_states.unsqueeze(0) + ped_velocities.unsqueeze(0) * (
-        t_idx * DT
-    )  # [H, n_peds, 2]
-    r = ego_pos.unsqueeze(1) - ped_pos_t  # [H, n_peds, 2] robot-ped
-    v_rel = ego_controls.unsqueeze(1) - ped_velocities.unsqueeze(0)  # [H, n_peds, 2]
-    v_rel_sq = (v_rel * v_rel).sum(dim=-1) + 1e-6  # [H, n_peds]
-    ttca = -(r * v_rel).sum(dim=-1) / v_rel_sq  # [H, n_peds]
-    # per-agent closest points at t* (R1)
-    robot_cp = ego_pos.unsqueeze(1) + ego_controls.unsqueeze(1) * ttca.unsqueeze(
-        -1
-    )  # [H,n_peds,2]
-    ped_cp = ped_pos_t + ped_velocities.unsqueeze(0) * ttca.unsqueeze(
-        -1
-    )  # [H,n_peds,2]
-    miss = torch.norm(robot_cp - ped_cp, dim=-1)  # [H, n_peds]
-    speed_robot = torch.norm(ego_controls, dim=-1, keepdim=True) + 1e-6  # [H, 1]
-    speed_ped = torch.norm(ped_velocities, dim=-1).unsqueeze(0) + 1e-6  # [1, n_peds]
-    t_robot = (
-        torch.norm(robot_cp - ego_pos.unsqueeze(1), dim=-1) / speed_robot
-    )  # [H,n_peds] (== ttca; see FLAG)
-    t_ped = (
-        torch.norm(ped_cp - ped_pos_t, dim=-1) / speed_ped
-    )  # [H,n_peds] (== ttca; see FLAG)
-    robot_first = torch.sigmoid(
-        _SIGMOID_K * (t_ped - t_robot)
-    )  # DEGENERATE placeholder — see FLAG
-    conflict_gate = torch.sigmoid(
-        _SIGMOID_K * (R_conflict - miss)
-    )  # genuine near-miss (valid)
-    ttca_gate = torch.sigmoid(_SIGMOID_K * (T_safe - ttca))  # imminent only (valid)
-    per_step = (robot_first * conflict_gate * ttca_gate).sum(dim=-1)  # [H]
-    return -per_step.sum()  # R4: sum over horizon
+    xr = _controls_to_positions(ego_controls)  # [H, 2] robot rollout
+    t_arrival = (
+        torch.arange(H, dtype=ego_controls.dtype, device=ego_controls.device) * DT
+    ).view(H, 1)  # [H,1] robot arrival time at each rollout step
+    p0 = ped_states.unsqueeze(0)  # [1, n_peds, 2]
+    vi = ped_velocities.unsqueeze(0)  # [1, n_peds, 2]
+    r = xr.unsqueeze(1) - p0  # [H, n_peds, 2]
+    vi_sq = (vi * vi).sum(dim=-1) + 1e-6  # [1, n_peds]
+    s_star = (r * vi).sum(dim=-1) / vi_sq  # [H, n_peds] ped time nearest xr
+    p_cross = p0 + vi * s_star.unsqueeze(-1)  # [H, n_peds, 2] nearest point on ped path
+    miss = torch.norm(
+        xr.unsqueeze(1) - p_cross, dim=-1
+    )  # [H, n_peds] robot -> ped PATH
+    pet = s_star - t_arrival  # [H, n_peds]
+    dist = torch.norm(r, dim=-1)  # [H, n_peds] robot -> ped now
+    pedspeed = torch.norm(ped_velocities, dim=-1).unsqueeze(0)  # [1, n_peds]
+    penalty = (
+        torch.nn.functional.softplus(pet)  # robot-first magnitude (PET>0 ⇒ cut-in)
+        * torch.exp(
+            -(pet * pet) / (2 * tau * tau)
+        )  # tight-gap bell: ~0 for big lead OR yielded
+        * torch.exp(-(miss * miss) / (2 * sigma * sigma))  # robot on the ped's path
+        * torch.sigmoid(_SIGMOID_K * s_star)  # crossing is ahead of the ped (s* > 0)
+        * torch.sigmoid(_SIGMOID_K * (max_range - dist))  # within range
+        * torch.sigmoid(_SIGMOID_K * (pedspeed - v_min))  # ped is actually moving
+    )  # [H, n_peds]
+    return -penalty.sum()  # R4: sum over horizon + peds; unweighted reward
 
 
 def single_group_reward_fn(
