@@ -78,6 +78,7 @@ def run_CFM(
     obs_positions,
     obs_velocities,
     control_history=None,
+    sink=None,
 ):
     start_pos = start_pos / config.space_scale
     goal_pos = goal_pos / config.space_scale
@@ -242,12 +243,20 @@ def run_CFM(
                 # history slots (mask defined above when control_history is not None)
                 normalized = normalized * mask
             coef = getattr(config, f"{name}_margin_coef")
-            social_terms.append(coef * normalized)
+            contribution = coef * normalized
+            social_terms.append(contribution)
+            if sink is not None:
+                sink.add_grad(j, name, contribution)
 
+        goal_contribution = config.goal_margin_coef * normalized_grad_goal
+        cbf_contribution = safe_coef * normalized_grad_cbf * markup
+        if sink is not None:
+            sink.add_grad(j, "goal", goal_contribution)
+            sink.add_grad(j, "cbf", cbf_contribution)
         u_t_pred_new = (
             u_t_pred
-            + config.goal_margin_coef * normalized_grad_goal
-            + safe_coef * normalized_grad_cbf * markup
+            + goal_contribution
+            + cbf_contribution
             + sum(
                 social_terms, torch.zeros_like(u_t_pred)
             )  # typed init: empty sum stays tensor
