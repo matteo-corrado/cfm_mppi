@@ -177,6 +177,12 @@ def single_norm_yield_reward_fn(
         * torch.sigmoid(_SIGMOID_K * s_star)  # crossing is ahead of the ped (s* > 0)
         * torch.sigmoid(_SIGMOID_K * (max_range - dist))  # within range
         * torch.sigmoid(_SIGMOID_K * (pedspeed - v_min))  # ped is actually moving
+        # HARD speed mask: the soft sigmoid above never reaches 0, and run_CFM
+        # unit-normalizes this term's gradient (eval_utils.py), so a merely-attenuated
+        # stopped ped renormalizes to full steering. A hard zero makes it truly inert
+        # (proxemic owns the standing-ped case). Constant in ego_controls ⇒ no autograd
+        # effect on the moving-ped gradient. Mirrored in norm_yield_cost (locus parity).
+        * (pedspeed > v_min).to(pet.dtype)
     )  # [H, n_peds]
     return -penalty.sum()  # R4: sum over horizon + peds; unweighted reward
 

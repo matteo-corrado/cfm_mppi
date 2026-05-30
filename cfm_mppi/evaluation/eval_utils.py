@@ -221,19 +221,36 @@ def run_CFM(
             else:
                 ped_pos_now = obs_positions
                 ped_vel_now = obs_velocities
+            # UNITS FIX (2026-05-30): run_CFM scales all geometry by space_scale
+            # (start/goal/obs/x_1_pred above), but the social terms carry PHYSICAL
+            # scale params (sigmas, max_range, v_min). Evaluate each reward in the
+            # PHYSICAL frame so its spatial gates fire at the intended metres —
+            # multiply the geometry back by space_scale before differentiating.
+            # The gradient is unit-normalized below, so the chain-rule space_scale
+            # factor on it is irrelevant; only the (now physically-correct) direction
+            # matters. This matches the MPPI locus, which already receives physical
+            # PedSnapshot geometry. goal_dir is a direction (legibility is a cosine)
+            # and group_pairs are integer indices, so neither needs scaling.
+            # See docs memory/context/architectural-findings.md (2026-05-30).
+            ss = config.space_scale
+            xr_phys = x_1_pred * ss
             if name == "legibility":
                 goal_dir = goal_pos.squeeze(0) - start_pos.squeeze(0)
                 grad = social_grad_fns[name](
-                    x_1_pred, ped_pos_now, ped_vel_now, goal_dir
+                    xr_phys, ped_pos_now * ss, ped_vel_now * ss, goal_dir
                 )
             elif name == "group":
                 # group takes ped positions + group_pairs (int indices), NOT velocities.
                 # Skip if no groups configured (avoids None subscript crash).
                 if config.group_pairs is None or config.group_pairs.numel() == 0:
                     continue
-                grad = social_grad_fns[name](x_1_pred, ped_pos_now, config.group_pairs)
+                grad = social_grad_fns[name](
+                    xr_phys, ped_pos_now * ss, config.group_pairs
+                )
             else:
-                grad = social_grad_fns[name](x_1_pred, ped_pos_now, ped_vel_now)
+                grad = social_grad_fns[name](
+                    xr_phys, ped_pos_now * ss, ped_vel_now * ss
+                )
             grad_norm = torch.norm(grad, keepdim=True)
             normalized = grad * u_norm / (grad_norm + 1e-8)
             if apply_markup:
