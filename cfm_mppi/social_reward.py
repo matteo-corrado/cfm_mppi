@@ -82,7 +82,9 @@ def _norm_side_step(
     dy = delta[..., 1]  # [B, n_peds] robot lateral in ped frame
 
     h_ped = ped_vel / (speed.unsqueeze(-1) + eps)  # [n_peds, 2]
-    r_speed = torch.norm(robot_vel, dim=-1, keepdim=True)  # [B, 1]
+    r_speed = (
+        robot_vel.pow(2).sum(dim=-1, keepdim=True) + eps
+    ).sqrt()  # [B,1] soft norm: grad-safe at robot v=0
     h_robot = robot_vel / (r_speed + eps)  # [B, 2]
     dot = torch.einsum("bd,pd->bp", h_robot, h_ped)  # [B, n_peds]
     align = torch.sigmoid(_SIGMOID_K * (-dot - _M_ALIGN))  # [B, n_peds] ONCOMING
@@ -93,7 +95,9 @@ def _norm_side_step(
         _SIGMOID_K * (ped_minus_robot * rel_v).sum(dim=-1)
     )  # [B, n_peds] APPROACHING (range-rate < 0)
 
-    dist = torch.norm(delta_world, dim=-1)  # [B, n_peds]
+    dist = (
+        delta_world.pow(2).sum(dim=-1) + eps
+    ).sqrt()  # [B,n_peds] soft norm: grad-safe at coincidence
     inrange = torch.sigmoid(_SIGMOID_K * (max_range - dist))  # [B, n_peds]
 
     pen = torch.nn.functional.softplus(
