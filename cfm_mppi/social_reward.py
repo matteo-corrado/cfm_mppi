@@ -125,6 +125,7 @@ def single_norm_yield_reward_fn(
     sigma: float = 0.5,  # "on the ped's path" spatial scale [m]
     v_min: float = 0.3,  # g_pedspeed threshold [m/s]
     max_range: float = 5.0,  # g_range cutoff [m] (matches proxemic)
+    cross_min: float = 0.2,  # |sin(angle(robot_vel,ped_vel))| floor: suppress collinear
 ) -> torch.Tensor:
     """Temporal arrival-order (PET) yield reward at the robot-trajectory crossing.
 
@@ -154,8 +155,8 @@ def single_norm_yield_reward_fn(
     H = ego_controls.shape[0]
     xr = _controls_to_positions(ego_controls)  # [H, 2] robot rollout
     t_arrival = (
-        torch.arange(H, dtype=ego_controls.dtype, device=ego_controls.device) * DT
-    ).view(H, 1)  # [H,1] robot arrival time at each rollout step
+        (torch.arange(H, dtype=ego_controls.dtype, device=ego_controls.device) + 1) * DT
+    ).view(H, 1)  # [H,1] xr[i]=cumsum is reached AFTER i+1 steps → t=(i+1)*DT, not i*DT
     p0 = ped_states.unsqueeze(0)  # [1, n_peds, 2]
     vi = ped_velocities.unsqueeze(0)  # [1, n_peds, 2]
     r = xr.unsqueeze(1) - p0  # [H, n_peds, 2]
@@ -168,6 +169,14 @@ def single_norm_yield_reward_fn(
     pet = s_star - t_arrival  # [H, n_peds]
     dist = torch.norm(r, dim=-1)  # [H, n_peds] robot -> ped now
     pedspeed = torch.norm(ped_velocities, dim=-1).unsqueeze(0)  # [1, n_peds]
+    # transversality: yield is a CROSSING term, so suppress collinear (head-on / following /
+    # parallel) encounters — those belong to proxemic/danger. |sin(angle(robot_vel,ped_vel))|
+    # via the 2D cross product; HARD gate so it survives run_CFM gradient normalization.
+    ur = ego_controls / (torch.norm(ego_controls, dim=-1, keepdim=True) + 1e-6)  # [H,2]
+    up = ped_velocities / (
+        torch.norm(ped_velocities, dim=-1, keepdim=True) + 1e-6
+    )  # [n_peds,2]
+    sin_cross = (ur[:, 0:1] * up[:, 1] - ur[:, 1:2] * up[:, 0]).abs()  # [H, n_peds]
     penalty = (
         torch.nn.functional.softplus(pet)  # robot-first magnitude (PET>0 ⇒ cut-in)
         * torch.exp(
@@ -183,6 +192,9 @@ def single_norm_yield_reward_fn(
         # (proxemic owns the standing-ped case). Constant in ego_controls ⇒ no autograd
         # effect on the moving-ped gradient. Mirrored in norm_yield_cost (locus parity).
         * (pedspeed > v_min).to(pet.dtype)
+        * (sin_cross > cross_min).to(
+            pet.dtype
+        )  # HARD transversality gate (crossing-only)
     )  # [H, n_peds]
     return -penalty.sum()  # R4: sum over horizon + peds; unweighted reward
 
