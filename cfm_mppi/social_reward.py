@@ -19,6 +19,26 @@ _SIGMOID_K = 10.0
 _M_ALIGN = 0.3
 
 
+def complexity_scale(
+    density: float,
+    narrowness: float,
+    beta: float = 0.5,
+    gamma: float = 0.5,
+) -> float:
+    """Complexity-conditioned weight multiplier (methodology §2.8, Stratton 2025).
+
+    ``w_eff = w_base · (1 + β·density + γ·narrowness)``. SSOT for BOTH cost loci:
+    the MPPI refinement cost (``mppi_costs.social_stage_cost_fn`` /
+    ``social_term_costs``) and the CFM reward-gradient bias (``run_CFM``, applied
+    to the per-term coef AFTER unit-normalization — scaling the gradient would be
+    erased by the renorm). Sharing one helper keeps the two loci magnitude-matched
+    so the locus×precision ablation is not confounded by an asymmetric scale
+    (cost-audit C1). β,γ ∈ {0, 0.5, 1.0}; β=γ=0 disables. density = peds/m² within
+    5 m; narrowness = 1/corridor_width.
+    """
+    return 1.0 + beta * density + gamma * narrowness
+
+
 def _controls_to_positions(ego_controls: torch.Tensor) -> torch.Tensor:
     """Cumulative integration: [horizon, 2] controls → [horizon, 2] xy positions.
 

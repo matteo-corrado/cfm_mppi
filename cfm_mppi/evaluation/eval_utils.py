@@ -1,6 +1,7 @@
 import torch
 from cfm_mppi.reward import single_cbf_reward_fn_pairwise, single_goal_reward_fn
 from cfm_mppi.social_reward import (
+    complexity_scale,
     single_proxemic_reward_fn,
     single_legibility_reward_fn,
     single_norm_side_reward_fn,
@@ -33,6 +34,18 @@ class CFMConfig:
     norm_yield_sigma: float = 0.5  # PET "on the ped's path" spatial scale [m]
     # NEW — group topology: [n_groups, 2] int indices into peds; None/empty = term off
     group_pairs: Optional[torch.Tensor] = None
+    # NEW — complexity-conditioned weight scaling (methodology §2.8, cost-audit C1).
+    # Applied to each term's coef AFTER unit-normalization (a scale on the gradient
+    # would be erased by run_CFM's renorm), using the SAME complexity_scale helper as
+    # the MPPI locus so the two stay magnitude-matched. density/narrowness default 0
+    # ⇒ scale 1.0 (backward-compatible); the sim adapter injects the per-scenario
+    # values via dataclasses.replace, mirroring how the MPPI locus reads them off the
+    # PedSnapshot. β=γ=0.5 default (the {0,0.5,1.0} knob lives here, no longer hardcoded).
+    complexity_scaling: bool = True
+    complexity_beta: float = 0.5
+    complexity_gamma: float = 0.5
+    density: float = 0.0
+    narrowness: float = 0.0
 
 
 def _social_now_index(seq_len, control_history):
@@ -260,6 +273,16 @@ def run_CFM(
                 # history slots (mask defined above when control_history is not None)
                 normalized = normalized * mask
             coef = getattr(config, f"{name}_margin_coef")
+            if config.complexity_scaling:
+                # Scale the COEF (post-renorm weight), not the grad — same
+                # complexity_scale as the MPPI locus, so both loci scale identically
+                # in dense/narrow scenarios (cost-audit C1 magnitude-match).
+                coef = coef * complexity_scale(
+                    config.density,
+                    config.narrowness,
+                    config.complexity_beta,
+                    config.complexity_gamma,
+                )
             contribution = coef * normalized
             social_terms.append(contribution)
             if sink is not None:
