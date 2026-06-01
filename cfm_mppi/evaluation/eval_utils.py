@@ -301,6 +301,8 @@ def run_CFM(
                 social_terms, torch.zeros_like(u_t_pred)
             )  # typed init: empty sum stays tensor
         )
+        if sink is not None:
+            sink.finish_ode_step(j, u_t_pred, u_t_pred_new)
         noisy_action_seq = (
             noisy_action_seq
             + (t_next.reshape(-1, 1, 1) - noise_level.reshape(-1, 1, 1)) * u_t_pred_new
